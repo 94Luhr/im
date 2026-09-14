@@ -16,6 +16,22 @@ python3 tests/load_test.py \
   --output load-test-report.json
 ```
 
+5000连接等跨主机大并发测试应增加 `--startup-spread 1`。脚本会等待全部连接尝试完成，再开始计算
+30秒压测窗口；首轮发送在1秒内均匀摊开，避免Windows asyncio事件循环中数千个定时任务同时唤醒，
+从而把压测客户端自身的调度等待误算为服务端响应延迟。报告会分别给出建连耗时、实际压测耗时和总耗时：
+
+```powershell
+python tests\load_test.py `
+  --host 192.168.111.128 `
+  --connections 5000 `
+  --duration 30 `
+  --interval 1 `
+  --burst 1 `
+  --fragment-ratio 0.1 `
+  --startup-spread 1 `
+  --output docs\results\cross-host-5000-staggered.json
+```
+
 逐级提高连接数时，先确认当前用户的文件描述符限制：
 
 ```bash
@@ -27,6 +43,10 @@ ulimit -n
 ```bash
 ulimit -n 65535
 ```
+
+`ulimit` 只对当前Shell及其子进程生效，必须在启动 `im_server_linux` 的同一个终端中执行；在另一个
+终端设置不会改变已经运行的服务端。大规模压测的服务日志建议写入Linux本地磁盘，例如
+`/home/lu/im-server-5000.log`，避免VMware共享目录I/O影响测试结果。
 
 建议依次测试 100、1000、5000 个连接，不要第一次就使用极端参数。报告中的 `response_success_percent` 应接近 100%，重点记录 `responses_per_second` 与 `latency_ms.p99`，并和服务端每30秒输出的 `server_metrics` 对照。
 

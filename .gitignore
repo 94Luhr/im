@@ -24,6 +24,11 @@ Makefile
 /load-test-report.json
 /business-load-report.json
 
+# 跨主机压测过程中的诊断报告，仅保留正式基线与过载保护结果
+/docs/results/cross-host-5000-part-*.json
+/docs/results/cross-host-5000-stable.json
+/docs/results/cross-host-5000-staggered.json
+
 # Python缓存与编辑器文件
 __pycache__/
 *.py[cod]

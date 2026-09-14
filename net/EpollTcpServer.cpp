@@ -111,6 +111,8 @@ bool EpollTcpServer::initNet() {
         perror("epoll_ctl"); unInitNet(); return false;
     }
     m_isRunning = true;
+    m_acceptPaused = false;
+    m_lastAcceptLimitLog = {};
     {
         std::lock_guard<std::mutex> lock(m_jobMutex);
         m_stopping = false;
@@ -189,7 +191,12 @@ void EpollTcpServer::acceptMetricsReady() {
     for (;;) {
         int fd = accept4(m_metricsSock, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (fd < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) perror("metrics accept4");
+            if (errno == EINTR) continue;
+            if (errno == EMFILE || errno == ENFILE) {
+                pauseAcceptingForFdLimit(errno);
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                perror("metrics accept4");
+            }
             return;
         }
         epoll_event event{};
@@ -327,13 +334,57 @@ void EpollTcpServer::closeMetricsConnection(int fd) {
     epoll_ctl(m_epollFd, EPOLL_CTL_DEL, fd, nullptr);
     close(fd);
     m_metricsConnections.erase(it);
+    resumeAccepting();
+}
+
+void EpollTcpServer::pauseAcceptingForFdLimit(int errorNumber) {
+    if (!m_acceptPaused) {
+        // 监听socket保持打开，只从epoll临时移除，避免可读事件持续触发形成忙循环。
+        epoll_ctl(m_epollFd, EPOLL_CTL_DEL, m_sock, nullptr);
+        epoll_ctl(m_epollFd, EPOLL_CTL_DEL, m_metricsSock, nullptr);
+        m_acceptPaused = true;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_lastAcceptLimitLog.time_since_epoch().count() == 0 ||
+        now - m_lastAcceptLimitLog >= std::chrono::seconds(5)) {
+        Logger::warning("accept_fd_limit_paused", {
+            {"error", std::to_string(errorNumber)},
+            {"active_connections", std::to_string(
+                ServerMetrics::instance().activeConnections.load())}});
+        m_lastAcceptLimitLog = now;
+    }
+}
+
+void EpollTcpServer::resumeAccepting() {
+    if (!m_acceptPaused || !m_isRunning) return;
+
+    epoll_event event{};
+    event.events = EPOLLIN;
+    event.data.fd = m_sock;
+    if (epoll_ctl(m_epollFd, EPOLL_CTL_ADD, m_sock, &event) != 0) return;
+
+    event.data.fd = m_metricsSock;
+    if (epoll_ctl(m_epollFd, EPOLL_CTL_ADD, m_metricsSock, &event) != 0) {
+        epoll_ctl(m_epollFd, EPOLL_CTL_DEL, m_sock, nullptr);
+        return;
+    }
+    m_acceptPaused = false;
 }
 
 void EpollTcpServer::acceptReady() {
     for (;;) {
         // 边沿触发模式必须循环 accept，直到内核返回 EAGAIN。
         int fd = accept4(m_sock, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
-        if (fd < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK) perror("accept4"); return; }
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EMFILE || errno == ENFILE) {
+                pauseAcceptingForFdLimit(errno);
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                perror("accept4");
+            }
+            return;
+        }
         epoll_event event{}; event.events = EPOLLIN | EPOLLRDHUP | EPOLLET; event.data.fd = fd;
         if (epoll_ctl(m_epollFd, EPOLL_CTL_ADD, fd, &event) == 0) {
             const uintptr_t connectionId = m_nextConnectionId++;
@@ -435,6 +486,8 @@ void EpollTcpServer::drainSendRequests() {
 }
 
 void EpollTcpServer::checkIdleConnections() {
+    // 资源已经由其他路径释放时，定时重试可避免监听socket永久停留在暂停状态。
+    resumeAccepting();
     const auto now = std::chrono::steady_clock::now();
     std::vector<int> expiredConnections;
 
@@ -538,6 +591,8 @@ void EpollTcpServer::closeConnection(
     const uintptr_t connectionId = it->second.id;
     m_connectionFds.erase(connectionId);
     epoll_ctl(m_epollFd, EPOLL_CTL_DEL, fd, nullptr); close(fd); m_connections.erase(it);
+    // 关闭一个连接后通常已经腾出fd，可立即恢复因EMFILE/ENFILE暂停的accept。
+    resumeAccepting();
     ++ServerMetrics::instance().closedConnections;
     if (ServerMetrics::instance().activeConnections.load() > 0) {
         --ServerMetrics::instance().activeConnections;

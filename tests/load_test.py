@@ -32,6 +32,22 @@ class Statistics:
     latencies_ms: List[float] = field(default_factory=list)
 
 
+@dataclass
+class LoadGate:
+    """等待全部连接完成后统一开始发包，避免把建连耗时混入压测窗口。"""
+
+    total: int
+    completed: int = 0
+    connections_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    start_sending: asyncio.Event = field(default_factory=asyncio.Event)
+    deadline: float = 0.0
+
+    def mark_connection_completed(self) -> None:
+        self.completed += 1
+        if self.completed >= self.total:
+            self.connections_ready.set()
+
+
 def build_frame(protocol_type: int) -> bytes:
     # 协议体中的 int 沿用 x86 小端布局，外层帧长度固定为网络字节序。
     body = struct.pack("<i", protocol_type)
@@ -97,13 +113,15 @@ async def read_responses(
 
 
 async def run_connection(
+    connection_index: int,
     host: str,
     port: int,
-    deadline: float,
     interval: float,
     burst: int,
     fragment_ratio: float,
+    startup_spread: float,
     connect_semaphore: asyncio.Semaphore,
+    load_gate: LoadGate,
     statistics: Statistics,
 ) -> None:
     writer: Optional[asyncio.StreamWriter] = None
@@ -115,7 +133,16 @@ async def run_connection(
         statistics.connected += 1
     except (asyncio.TimeoutError, ConnectionError, OSError):
         statistics.connection_failures += 1
+        load_gate.mark_connection_completed()
         return
+
+    load_gate.mark_connection_completed()
+    await load_gate.start_sending.wait()
+
+    # 将大量连接的周期发送均匀摊开，避免所有协程在同一毫秒唤醒形成“惊群”。
+    if startup_spread > 0:
+        phase = connection_index * startup_spread / load_gate.total
+        await asyncio.sleep(phase)
 
     pending: Deque[float] = deque()
     stopping = asyncio.Event()
@@ -123,7 +150,7 @@ async def run_connection(
     heartbeat_frame = build_frame(HEARTBEAT_REQUEST)
 
     try:
-        while time.monotonic() < deadline and not reader_task.done():
+        while time.monotonic() < load_gate.deadline and not reader_task.done():
             # 多帧在一次 write 中提交，用于覆盖 TCP 粘包场景。
             payload = heartbeat_frame * burst
             now = time.perf_counter()
@@ -131,7 +158,10 @@ async def run_connection(
             await write_with_optional_fragmentation(writer, payload, fragment_ratio)
             statistics.requests_sent += burst
             if interval > 0:
-                await asyncio.sleep(interval)
+                # 最后一轮只等待到压测截止时刻，避免报告凭空多出一个完整发送间隔。
+                remaining = load_gate.deadline - time.monotonic()
+                if remaining > 0:
+                    await asyncio.sleep(min(interval, remaining))
             else:
                 await asyncio.sleep(0)
         # 给已经发出的请求短暂时间返回，避免结束瞬间低估成功率。
@@ -151,7 +181,13 @@ async def run_connection(
         await asyncio.gather(reader_task, return_exceptions=True)
 
 
-def build_report(statistics: Statistics, duration: float, arguments: argparse.Namespace) -> dict:
+def build_report(
+    statistics: Statistics,
+    load_duration: float,
+    total_duration: float,
+    connection_setup_duration: float,
+    arguments: argparse.Namespace,
+) -> dict:
     latency_values = statistics.latencies_ms
     report = asdict(statistics)
     report.pop("latencies_ms", None)
@@ -160,11 +196,15 @@ def build_report(statistics: Statistics, duration: float, arguments: argparse.Na
             "host": arguments.host,
             "port": arguments.port,
             "configured_duration_seconds": arguments.duration,
-            "actual_duration_seconds": round(duration, 3),
+            "connection_setup_seconds": round(connection_setup_duration, 3),
+            "actual_duration_seconds": round(load_duration, 3),
+            "total_duration_seconds": round(total_duration, 3),
             "burst": arguments.burst,
             "fragment_ratio": arguments.fragment_ratio,
+            "startup_spread_seconds": arguments.startup_spread,
             "responses_per_second": round(
-                statistics.responses_received / duration if duration > 0 else 0.0, 2
+                statistics.responses_received / load_duration if load_duration > 0 else 0.0,
+                2,
             ),
             "response_success_percent": round(
                 statistics.responses_received * 100.0 / statistics.requests_sent
@@ -189,25 +229,39 @@ def build_report(statistics: Statistics, duration: float, arguments: argparse.Na
 async def run(arguments: argparse.Namespace) -> dict:
     statistics = Statistics(requested_connections=arguments.connections)
     semaphore = asyncio.Semaphore(arguments.connect_concurrency)
+    load_gate = LoadGate(total=arguments.connections)
     started_at = time.monotonic()
-    deadline = started_at + arguments.duration
     tasks = [
         asyncio.create_task(
             run_connection(
+                connection_index,
                 arguments.host,
                 arguments.port,
-                deadline,
                 arguments.interval,
                 arguments.burst,
                 arguments.fragment_ratio,
+                arguments.startup_spread,
                 semaphore,
+                load_gate,
                 statistics,
             )
         )
-        for _ in range(arguments.connections)
+        for connection_index in range(arguments.connections)
     ]
+    await load_gate.connections_ready.wait()
+    connection_setup_duration = time.monotonic() - started_at
+    load_started_at = time.monotonic()
+    load_gate.deadline = load_started_at + arguments.duration
+    load_gate.start_sending.set()
     await asyncio.gather(*tasks)
-    return build_report(statistics, time.monotonic() - started_at, arguments)
+    finished_at = time.monotonic()
+    return build_report(
+        statistics,
+        finished_at - load_started_at,
+        finished_at - started_at,
+        connection_setup_duration,
+        arguments,
+    )
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -224,10 +278,23 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--connect-concurrency", type=int, default=200, help="同时执行连接握手的数量"
     )
+    parser.add_argument(
+        "--startup-spread",
+        type=float,
+        default=0.0,
+        help="将首轮发送均匀摊开的秒数，跨主机大并发测试建议设为1",
+    )
     parser.add_argument("--output", default="load-test-report.json", help="JSON报告路径")
     arguments = parser.parse_args()
-    if arguments.connections <= 0 or arguments.duration <= 0 or arguments.interval < 0:
-        parser.error("连接数和持续时间必须大于0，间隔不能小于0")
+    if (
+        arguments.connections <= 0
+        or arguments.duration <= 0
+        or arguments.interval < 0
+        or arguments.startup_spread < 0
+    ):
+        parser.error("连接数和持续时间必须大于0，发送间隔和错峰时间不能小于0")
+    if arguments.startup_spread >= arguments.duration:
+        parser.error("错峰时间必须小于压测持续时间")
     if arguments.burst <= 0 or arguments.connect_concurrency <= 0:
         parser.error("burst和连接并发数必须大于0")
     if not 0.0 <= arguments.fragment_ratio <= 1.0:

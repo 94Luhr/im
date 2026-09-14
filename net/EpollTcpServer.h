@@ -46,6 +46,8 @@ private:
     void run();
     void acceptReady();
     void acceptMetricsReady();
+    void pauseAcceptingForFdLimit(int errorNumber);
+    void resumeAccepting();
     void readReady(int fd);
     void readMetricsReady(int fd);
     void writeReady(int fd);
@@ -87,5 +89,7 @@ private:
     std::size_t m_maxPendingJobs = 10000;      // 有界队列容量，防止突发流量耗尽内存。
     unsigned int m_metricsTick = 0;            // 每三个10秒定时周期输出一次指标。
     uint16_t m_metricsPort = 9108;              // 可通过环境变量IM_METRICS_PORT调整。
+    bool m_acceptPaused = false;               // 文件描述符耗尽时临时移除两个监听事件。
+    std::chrono::steady_clock::time_point m_lastAcceptLimitLog; // 限制资源耗尽日志频率。
     std::atomic_bool m_stopping{false};       // 通知业务线程退出。
 };
