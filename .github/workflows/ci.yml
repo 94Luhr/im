@@ -1,0 +1,93 @@
+name: Linux服务端持续集成
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-integration-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_DATABASE: imdb
+          MYSQL_USER: imserver
+          MYSQL_PASSWORD: "ci-db-password"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -prootpass"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装编译与数据库依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libssl-dev default-libmysqlclient-dev mysql-client
+
+      - name: 初始化数据库结构
+        env:
+          MYSQL_PWD: rootpass
+        run: mysql -h 127.0.0.1 -uroot < database/schema.sql
+
+      - name: 构建Release服务端
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+
+      - name: 启动服务端并等待就绪
+        env:
+          IM_DB_HOST: 127.0.0.1
+          IM_DB_USER: imserver
+          IM_DB_PASSWORD: "ci-db-password"
+          IM_DB_NAME: imdb
+        run: |
+          ./build/im_server_linux > server-ci.log 2>&1 &
+          echo $! > server-ci.pid
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9108/metrics >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat server-ci.log
+          exit 1
+
+      - name: 执行核心业务集成测试
+        env:
+          IM_DB_HOST: 127.0.0.1
+          IM_DB_USER: imserver
+          IM_DB_PASSWORD: "ci-db-password"
+          IM_DB_NAME: imdb
+        run: bash tests/run_integration_test.sh --output integration-report.json
+
+      - name: 输出失败时的服务端日志
+        if: failure()
+        run: cat server-ci.log || true
+
+      - name: 保存测试报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-report
+          path: |
+            integration-report.json
+            server-ci.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 停止服务端
+        if: always()
+        run: |
+          if test -f server-ci.pid; then
+            kill -TERM "$(cat server-ci.pid)" 2>/dev/null || true
+          fi

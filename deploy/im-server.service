@@ -1,0 +1,31 @@
+[Unit]
+Description=IM Linux epoll服务端
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=imserver
+Group=imserver
+WorkingDirectory=/opt/im-server
+EnvironmentFile=/etc/im-server/im-server.env
+ExecStart=/opt/im-server/im_server_linux
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+LimitNOFILE=65535
+
+# 服务不需要写入系统目录，运行日志统一交给journald管理。
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

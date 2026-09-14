@@ -1,0 +1,36 @@
+{
+  "requested_pairs": 10,
+  "sender_login_successes": 10,
+  "receiver_login_successes": 10,
+  "login_failures": 0,
+  "connection_failures": 0,
+  "messages_requested": 50,
+  "messages_persisted": 50,
+  "persist_failures": 0,
+  "offline_messages_received": 50,
+  "acknowledgements_sent": 50,
+  "protocol_errors": 0,
+  "task_failures": 0,
+  "host": "127.0.0.1",
+  "port": 56789,
+  "run_token": "f6880de0",
+  "messages_per_pair": 5,
+  "persist_duration_seconds": 0.08,
+  "delivery_duration_seconds": 0.017,
+  "persisted_messages_per_second": 628.0,
+  "delivered_messages_per_second": 2943.45,
+  "persist_latency_ms": {
+    "average": 11.764,
+    "p50": 11.096,
+    "p95": 15.007,
+    "p99": 15.804,
+    "maximum": 15.956
+  },
+  "receiver_login_latency_ms": {
+    "average": 8.64,
+    "p50": 7.246,
+    "p95": 12.123,
+    "p99": 12.123,
+    "maximum": 14.753
+  }
+}

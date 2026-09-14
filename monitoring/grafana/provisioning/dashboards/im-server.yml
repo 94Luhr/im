@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: IM服务端
+    orgId: 1
+    folder: IM服务端
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+

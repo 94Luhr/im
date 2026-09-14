@@ -1,0 +1,38 @@
+# Linux与CMake构建产物
+/build/
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.o
+*.a
+*.so
+
+# Visual Studio旧构建产物
+/Debug/
+/Release/
+/x64/
+*.obj
+*.pdb
+*.ilk
+*.tlog
+
+# 运行日志与临时报告
+/*.log
+/integration-report.json
+/load-test-report.json
+/business-load-report.json
+
+# Python缓存与编辑器文件
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+*.swp
+*~
+
+# 本地密钥和数据库配置
+.env
+*.env.local
+deploy/im-server.env

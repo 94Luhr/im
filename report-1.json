@@ -1,0 +1,25 @@
+{
+  "requested_connections": 1,
+  "connected": 1,
+  "connection_failures": 0,
+  "unexpected_disconnects": 0,
+  "requests_sent": 5,
+  "responses_received": 5,
+  "protocol_errors": 0,
+  "write_failures": 0,
+  "host": "127.0.0.1",
+  "port": 56789,
+  "configured_duration_seconds": 5.0,
+  "actual_duration_seconds": 5.009,
+  "burst": 1,
+  "fragment_ratio": 0.0,
+  "responses_per_second": 1.0,
+  "response_success_percent": 100.0,
+  "latency_ms": {
+    "average": 0.755,
+    "p50": 0.517,
+    "p95": 1.129,
+    "p99": 1.129,
+    "maximum": 1.5
+  }
+}

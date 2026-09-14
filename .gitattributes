@@ -1,0 +1,10 @@
+# Linux服务端及部署文件统一使用LF，避免共享目录中的CRLF破坏脚本执行。
+* text=auto
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.service text eol=lf
+*.sql text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+CMakeLists.txt text eol=lf
