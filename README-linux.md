@@ -1,5 +1,7 @@
 # Linux epoll 服务端
 
+> 项目总览、架构图、性能摘要和文档导航请从根目录 [README.md](README.md) 开始；本文保留Linux服务端的详细运行说明。
+
 本目录仅保留 Linux `epoll` 服务端；Windows Qt 客户端位于独立项目中。
 
 ```bash
